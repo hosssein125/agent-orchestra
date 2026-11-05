@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# notify-webhook.sh (fail flavor) — POST a failure alert to a webhook.
+#
+# Enable: rename to notify-webhook.sh and set the target URL:
+#   echo 'https://discord.com/api/webhooks/…' > hooks/notify.url
+# (gitignored) — or export ORCH_NOTIFY_URL.
+url="${ORCH_NOTIFY_URL:-}"
+uf="$(dirname "$(dirname "$0")")/notify.url"
+[[ -z "$url" && -f "$uf" ]] && url="$(head -n1 "$uf" | tr -d '[:space:]')"
+[[ -n "$url" ]] || exit 0
+
+tail3="$(tail -n 3 "${ORCH_STDERR_FILE:-}" 2>/dev/null | tr '\n' ' ' | cut -c1-180)"
+payload="$(printf '{"text":"[%s] %s dispatch FAILED rc=%s — %s","content":"[%s] %s dispatch FAILED rc=%s — %s","role":"%s","event":"fail","rc":"%s"}' \
+  "${ORCH_PROJECT:-orch}" "$ORCH_ROLE" "${ORCH_RC:-?}" "${tail3:-<no stderr>}" \
+  "${ORCH_PROJECT:-orch}" "$ORCH_ROLE" "${ORCH_RC:-?}" "${tail3:-<no stderr>}" \
+  "$ORCH_ROLE" "${ORCH_RC:-?}")"
+
+curl -sS -m 10 -H 'content-type: application/json' -d "$payload" "$url" >/dev/null || true

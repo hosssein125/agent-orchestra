@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# notify-telegram.sh — send a Telegram message when a relay replies/fails.
+#
+# Enable: rename to notify-telegram.sh and configure EITHER env vars
+#   ORCH_TG_BOT_TOKEN + ORCH_TG_CHAT_ID
+# or a gitignored file hooks/telegram.env containing:
+#   ORCH_TG_BOT_TOKEN=123456:ABC...
+#   ORCH_TG_CHAT_ID=-1001234567890
+tgif="$(dirname "$(dirname "$0")")/telegram.env"
+[[ -f "$tgif" ]] && source "$tgif"
+[[ -n "${ORCH_TG_BOT_TOKEN:-}" && -n "${ORCH_TG_CHAT_ID:-}" ]] || exit 0
+
+summary="$(tail -n 20 "${ORCH_REPLY_FILE:-}" 2>/dev/null | grep -E '^(STATUS|GATES|NEXT):' | tr '\n' ' ' | cut -c1-180)"
+dur="${ORCH_DURATION:-0}s"; tok="in=${ORCH_TOKENS_IN:-?} out=${ORCH_TOKENS_OUT:-?}"
+case "${ORCH_EVENT:-reply}" in
+  fail) text="🟥 [${ORCH_PROJECT:-orch}] ${ORCH_ROLE} dispatch FAILED rc=${ORCH_RC:-?}" ;;
+  *)    text="✅ [${ORCH_PROJECT:-orch}] ${ORCH_ROLE} replied (${dur}, tokens ${tok})
+${summary:-<no summary>}" ;;
+esac
+
+curl -sS -m 10 "https://api.telegram.org/bot${ORCH_TG_BOT_TOKEN}/sendMessage" \
+  -d chat_id="${ORCH_TG_CHAT_ID}" --data-urlencode "text=${text}" >/dev/null || true

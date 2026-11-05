@@ -1,0 +1,6 @@
+*.tmp
+*.log
+!ledger/activity.log
+hooks/notify.url
+hooks/*.local.sh
+orchestration.local.json

@@ -1,0 +1,10 @@
+{
+  "project": "MyProduct",
+  "roles": {
+    "backend": "C:/Projects/my-product-api",
+    "admin-front": "C:/Projects/my-product-admin",
+    "customer-front": "C:/Projects/my-product-app"
+  },
+  "overlap_axes": ["endpoints", "schemas/DTOs", "permissions", "migrations"],
+  "contract_note_root": "Docs/frontend"
+}

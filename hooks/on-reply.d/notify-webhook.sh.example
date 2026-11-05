@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# notify-webhook.sh — POST a one-line event summary to a webhook.
+# Works with Discord, Slack, and any JSON-tolerant receiver.
+#
+# Enable: rename this file to notify-webhook.sh and set the target URL:
+#   echo 'https://discord.com/api/webhooks/…' > hooks/notify.url
+# (that file is gitignored) — or export ORCH_NOTIFY_URL instead.
+url="${ORCH_NOTIFY_URL:-}"
+uf="$(dirname "$(dirname "$0")")/notify.url"
+[[ -z "$url" && -f "$uf" ]] && url="$(head -n1 "$uf" | tr -d '[:space:]')"
+[[ -n "$url" ]] || exit 0   # not configured — stay silent, never fail
+
+tag="[${ORCH_PROJECT:-orch}]"
+summary="$(tail -n 20 "${ORCH_REPLY_FILE:-}" 2>/dev/null | grep -E '^(STATUS|GATES|NEXT):' | tr '\n' ' ' | cut -c1-200)"
+dur="${ORCH_DURATION:-0}s"
+tok="in=${ORCH_TOKENS_IN:-?} out=${ORCH_TOKENS_OUT:-?}"
+
+# Discord/Slack accept {"content"/"text": …}; generic receivers get both keys.
+payload="$(printf '{"text":"%s %s replied (%s, tokens %s) — %s","content":"%s %s replied (%s, tokens %s) — %s","role":"%s","event":"%s","duration":%s,"tokens_in":"%s","tokens_out":"%s"}' \
+  "$tag" "$ORCH_ROLE" "$dur" "$tok" "${summary:-<no summary>}" \
+  "$tag" "$ORCH_ROLE" "$dur" "$tok" "${summary:-<no summary>}" \
+  "$ORCH_ROLE" "${ORCH_EVENT:-reply}" "${ORCH_DURATION:-0}" "${ORCH_TOKENS_IN:-0}" "${ORCH_TOKENS_OUT:-0}")"
+
+curl -sS -m 10 -H 'content-type: application/json' -d "$payload" "$url" >/dev/null || true
