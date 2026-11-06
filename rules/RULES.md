@@ -189,3 +189,89 @@ application confirms them (R13 discipline applies).
   task returned) and only orphans when the envelope is incomplete;
   `relay.sh --salvage` injects the R17 message. The orchestrator's judgment
   steps in a crash are now: run the watchdog, read its output, dispatch.
+
+## Release discipline — designed-in (2026-11-07, devops role added)
+
+Not yet exercised in a live run — R13 applies: promote/adjust after the
+first release, hotfix, and rollback actually happen.
+
+- **R29 — The release transaction belongs to one role.** Releases,
+  hotfixes, and rollbacks are executed only by the devops role, from a
+  written release order (`ledger/releases/REL-*.md`) — contents are
+  ledger facts, never the executing agent's choice. Discipline: nothing
+  tagged that wasn't built on `main`; push is the single commit point
+  (everything before it is local and free to reset); history and
+  published tags are never rewritten, moved, or deleted. The reply's
+  claims are verified with `release-check.sh` (R12), not trusted.
+- **R30 — Hotfix = owning role fixes, devops ships.** The fix is written
+  by the repo's role agent on a branch off main's latest release tag, as
+  a minimal diff (bigger means it's a feature — kill the branch). Devops
+  merges to main, patch-tags the **affected repos only**, and back-ports
+  to develop: a clean back-port ships in the same push round; a
+  conflicted one ships the fix anyway and escalates the develop side to
+  the owning role as a tracked follow-up task.
+- **R31 — Rollback feasibility is a migration question.** Before any
+  rollback, diff EF migrations between the bad tag and the previous
+  known-good tag: an irreversible migration (drop/rename/transform)
+  blocks code rollback — the only path forward is a hotfix. Rollback vs
+  fix-forward is the user's call (R11). A rollback is a forward revert +
+  new patch tag; develop keeps the code and the feature reopens through
+  the normal lifecycle.
+
+## Parallel backend lanes — designed-in (2026-11-07)
+
+Not yet exercised in a live run — R13 applies: adjust after the first
+genuinely parallel feature pair.
+
+- **R32 — Dispatch a queued backend task only against landed state.**
+  Re-check its overlap verdict against the FINAL contracts of tasks that
+  finished while it queued (intake verdicts are guesses; contract notes
+  are facts), and require the predecessor's branch merged to
+  `forti/develop` first — a migration scaffolded against a stale
+  ModelSnapshot is the failure this prevents. The ledger's
+  contract-deltas section is the source of truth.
+- **R33 — Lanes: migration work is single-lane, clean work is parallel.**
+  Schema-touching (or schema-unknown) tasks route to the `backend`
+  migration lane, serialized by R19. Schema-free clean tasks may occupy
+  the parallel lanes (`backend-2`…`backend-9`, extendable in config —
+  worktrees/sessions are lazy, idle lanes cost nothing: isolated
+  worktrees, one
+  session each); a task overlapping an in-flight lane's task queues in
+  that same lane. Parallel lanes NEVER run `dotnet ef migrations add` —
+  a task discovering a schema need reports `blocked` and is re-routed
+  with its proposal. Lanes land via the normal PR flow; the orchestrator
+  sequences the merge train (first-done, first-reviewed).
+
+## Selective release — designed-in (2026-11-07)
+
+Not yet exercised in a live run — R13 applies after the first
+`MODE: features` release.
+
+- **R34 — Selective releases compose, they never merge blindly.** A
+  `MODE: features` release order lists, per feature × repo, an explicit
+  source (`branch:<name>` pre-PR-merge, `merged:<sha>` of the PR merge
+  commit after) resolved from the ledger — the devops agent verifies,
+  and if a source is missing or ambiguous it aborts rather than guessing.
+  Composition happens on a `release/<VERSION>` branch off main per repo;
+  gates: build+tests on the composed branch, **migration chain
+  contiguity** (selected migrations must extend main's chain — a
+  dependency on unselected work aborts the release: widen the selection
+  or release whole develop), and front/backend pairing (a front source
+  ships only with its backend, in this release or already on main).
+  Sources not yet on develop are back-ported (release branch → develop)
+  in the same push round — main must not stay ahead of develop.
+
+## Front lanes — designed-in (2026-11-07)
+
+Not yet exercised in a live run — R13 applies.
+
+- **R35 — Front lanes are uniform; overlap is UI surface.** Front
+  parallel lanes (`admin-front-2`…`-9`, `customer-front-2`…`-9`) are all
+  equal — no schema means no migration lane. Admission axes: pages/routes
+  touched, shared components/widgets, store & api-client areas, shared
+  config surfaces (router, nav/menu, i18n resources), and the backend
+  contract consumed. Overlap → queue in the in-flight task's lane;
+  UI-surface unknown → the base role (lane 1); clean → any idle lane.
+  Front worktrees each install their own dependencies — declare lanes
+  freely (lazy, idle ones cost nothing) but keep concurrently ACTIVE
+  front lanes low until queue history justifies more.

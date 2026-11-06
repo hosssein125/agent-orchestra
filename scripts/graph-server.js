@@ -27,13 +27,12 @@ try {
   }
   if (cfg.project) PROJECT = String(cfg.project).toUpperCase();
 } catch (e) { /* no config — generic defaults */ }
-// spread role nodes across the 960-wide viewBox, centered under the orchestrator
-const POS = {};
-ROLES.forEach((r, i) => {
-  const n = ROLES.length;
-  const spread = n > 1 ? Math.min(320, 760 / (n - 1)) : 0;
-  POS[r] = [Math.round(480 + (i - (n - 1) / 2) * spread), 330];
-});
+// families: a role without a trailing -N is a family root (backend vs
+// backend-2…backend-9 lanes; same for the front repos). Layout is
+// computed per request in layout() — declared-but-never-used lanes stay
+// hidden; a lane node appears once it has a session, a transcript, or an
+// in-flight dispatch. The topology grows as lanes actually activate.
+function famRoot(r) { return r.replace(/-\d+$/, ''); }
 
 // ---------- state from the ledger ----------
 function stampToDate(st) {
@@ -51,8 +50,11 @@ function readRoles() {
   let files = [];
   try { files = fs.readdirSync(MESSAGES); } catch (e) {}
   for (const role of ROLES) {
+    // exact <role>-<stamp>-out.md match — a plain startsWith would let the
+    // `backend` role swallow `backend-2-…` lane transcripts (and vice versa)
+    const pat = new RegExp('^' + role.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '-\\d{8}-\\d{6}-out\\.md$');
     const stamps = files
-      .filter(f => f.startsWith(role + '-') && f.endsWith('-out.md'))
+      .filter(f => pat.test(f))
       .map(f => (f.match(/(\d{8}-\d{6})/) || [])[1])
       .filter(Boolean).sort();
     let pairs = 0, lastReply = null, inflight = null;
@@ -109,6 +111,27 @@ function readTasks() {
   try { return JSON.parse(fs.readFileSync(path.join(LEDGER, 'tasks.json'), 'utf8')); } catch (e) { return {}; }
 }
 
+// ---------- layout: roots always visible; lanes once activated ----------
+function layout(roles) {
+  const active = ln => { const d = roles[ln]; return !!(d && (d.sess || d.msgs > 0 || d.inflight)); };
+  const roots = ROLES.filter(r => !/-\d+$/.test(r));
+  const visible = [];
+  for (const r of roots) {
+    visible.push(r);
+    for (const ln of ROLES) if (ln !== r && famRoot(ln) === r && active(ln)) visible.push(ln);
+  }
+  for (const ln of ROLES) if (/-\d+$/.test(ln) && !visible.includes(ln) && active(ln)) visible.push(ln);
+  const perRow = 4, colW = 240, rowH = 200;
+  const pos = {};
+  visible.forEach((r, i) => {
+    const row = Math.floor(i / perRow);
+    const n = Math.min(perRow, visible.length - row * perRow);
+    pos[r] = [Math.round(120 + (i % perRow) * colW + (perRow - n) * colW / 2), 330 + row * rowH];
+  });
+  const rows = Math.max(1, Math.ceil(visible.length / perRow));
+  return { pos, vb: [960, Math.max(520, 330 + (rows - 1) * rowH + 130)] };
+}
+
 function readState() {
   const roles = readRoles();
   const features = readFeatures();
@@ -119,7 +142,7 @@ function readState() {
   const now = new Date();
   return {
     now: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0'),
-    roles, features, tasks, activity,
+    roles, features, tasks, activity, layout: layout(roles),
     orchestrator: { inflight, features: features.length },
   };
 }
@@ -138,6 +161,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8">'
 + '#features li{list-style:none;margin:4px 0;padding:6px 8px;background:#111c33;border-radius:6px;display:flex;justify-content:space-between;gap:8px;cursor:pointer}'
 + '#features li:hover{background:#1c2a4a}#features span{white-space:nowrap}#activity li{list-style:none;margin:3px 0;color:#94a3b8;font-family:Consolas,monospace;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
 + '.st-done{color:#34d399}.st-blocked,.st-negotiating{color:#f87171}.st-front-applying,.st-backend-in-flight,.st-backend-queued,.st-analyzing,.st-requested,.st-contract-published,.st-active{color:#fbbf24}'
++ '.st-releasing{color:#a78bfa}.st-released{color:#34d399}.st-hotfix-in-flight{color:#fb923c}.st-rolled-back{color:#f87171}'
 + '.a-START{color:#7dd3fc}.a-END{color:#34d399}.a-FAILED{color:#f87171}'
 + 'footer{padding:6px 18px;background:#111c33;border-top:1px solid #24314f;color:#64748b;font-size:11px}'
 + '.edge{stroke:#334155;stroke-width:2}.edge.active{stroke:#fbbf24;stroke-width:2.5;stroke-dasharray:8 6;animation:dash 1s linear infinite}'
@@ -167,7 +191,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8">'
 + '<div id="panel"><button class="x" onclick="hidePanel()">×</button><div id="panelbody"></div></div>'
 + '<aside><h2>Features (click for task history)</h2><ul id="features" style="padding:0;margin:0"></ul>'
 + '<h2>Activity</h2><ul id="activity" style="padding:0;margin:0"></ul></aside></main>'
-+ '<footer>click a task in the features list, a chip under a node, or a moving token → panel with duration + every move and its reason · amber circle = task in transit on the connector (looping while the relay runs, returns on reply) · chips under a node = tasks it holds</footer>'
++ '<footer>click a task in the features list, a chip under a node, or a moving token → panel with duration + every move and its reason · amber circle = task in transit on the connector (looping while the relay runs, returns on reply) · chips under a node = tasks it holds · lane agents appear when activated (declared idle lanes stay hidden)</footer>'
 + '<script>'
 + 'function $(id){return document.getElementById(id)}'
 + 'function esc(s){return String(s==null?"":s).replace(/[<>&"]/g,function(c){return {"<":"&lt;",">":"&gt;","&":"&amp;","\\"":"&quot;"}[c]})}'
@@ -175,7 +199,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8">'
 + 'function shortId(id){return String(id).replace(/^FEAT-\\d{8}-/,"").slice(0,22)}'
 + 'function parseT(s){if(!s)return null;var m=String(s).match(/(\\d{4})-(\\d{2})-(\\d{2})[ T](\\d{2}):(\\d{2})/);return m?new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5]):null}'
 + 'function fmtDur(ms){if(ms<0)ms=0;var m=Math.round(ms/60000);if(m<60)return m+"m";var h=Math.floor(m/60);if(h<24)return h+"h"+(m%60)+"m";return Math.floor(h/24)+"d "+(h%24)+"h"}'
-+ 'var POS=' + JSON.stringify(POS) + ';var ORCH=[480,110];var TASKS={};var PREV={};var TOKENS=[];'
++ 'var POS={};var VB=[960,520];var ORCH=[480,110];var TASKS={};var PREV={};var TOKENS=[];'
 + 'function heldBy(holder,doneToo){var out=[];for(var id in TASKS){var t=TASKS[id];if(t.holder===holder&&(doneToo||t.status!=="done"))out.push(id)}return out}'
 + 'function card(x,y,name,d,held){var cls="n-"+d.state;'
 + 'var h=["WORKING — relay in flight","IDLE — waiting for work","WAITING — no session yet","SILENT "+(d.inflight&&d.inflight.lastOutAgo!=null?d.inflight.lastOutAgo+"m":"")][{working:0,idle:1,none:2,silent:3}[d.state]];'
@@ -205,11 +229,12 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8">'
 + 'return "<line class=\\""+cls+"\\" x1=\\""+ox+"\\" y1=\\""+oy+"\\" x2=\\""+tx+"\\" y2=\\""+ty+"\\"/>"'
 + '+ "<rect x=\\""+(mx-38)+"\\" y=\\""+(my-9)+"\\" width=\\"76\\" height=\\"16\\" rx=\\"4\\" fill=\\"#0b1220\\"/>"'
 + '+ "<text class=\\"elabel\\" x=\\""+mx+"\\" y=\\""+(my+3)+"\\" text-anchor=\\"middle\\">"+esc(lbl)+"</text>"}'
-+ 'function render(st){TASKS=st.tasks||{};$("clock").textContent=st.now+" · "+st.orchestrator.inflight+" in flight · "+st.orchestrator.features+" features";'
++ 'function render(st){TASKS=st.tasks||{};if(st.layout){POS=st.layout.pos;VB=st.layout.vb;$("svg").setAttribute("viewBox","0 0 "+VB[0]+" "+VB[1])}'
++ '$("clock").textContent=st.now+" · "+st.orchestrator.inflight+" in flight · "+st.orchestrator.features+" features · "+Object.keys(POS).length+" agents";'
 + 'var s="<defs></defs>";'
 + 's+=orchBox(st);'
-+ 'for(var role in POS){var d=st.roles[role];var p=POS[role];var held=heldBy(role,true);'
-+ 's+=edge(ORCH[0],ORCH[1]+34,p[0],p[1]-56,d);s+=card(p[0],p[1],role,d,held)}'
++ 'for(var role in POS){var d=st.roles[role];var p=POS[role];s+=edge(ORCH[0],ORCH[1]+34,p[0],p[1]-56,d)}'
++ 'for(var role in POS){var d=st.roles[role];var p=POS[role];var held=heldBy(role,true);s+=card(p[0],p[1],role,d,held)}'
 + '$("maing").innerHTML=s;'
 + '$("features").innerHTML=st.features.map(function(f){return "<li data-task=\\""+esc(f.title)+"\\"><b>"+esc(f.title)+"</b><span class=\\"st-"+esc(f.status)+"\\">"+esc(f.status)+"</span></li>"}).join("");'
 + '$("activity").innerHTML=st.activity.map(function(l){var c=l.indexOf("START")>=0?"a-START":l.indexOf("END")>=0?"a-END":l.indexOf("FAILED")>=0?"a-FAILED":"";return "<li class=\\""+c+"\\">"+esc(l)+"</li>"}).join("");'

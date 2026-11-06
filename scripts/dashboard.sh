@@ -55,7 +55,18 @@ stamp_age_min() {
   ep="$(date -d "${d:0:4}-${d:4:2}-${d:6:2} ${t:0:2}:${t:2:2}:${t:4:2}" +%s 2>/dev/null || true)"
   [[ -n "$ep" ]] && echo $(( ($(date +%s) - ep) / 60 )) || echo 0
 }
-feat_status_color() { case "$1" in done) echo "$GRN";; blocked|negotiating) echo "$RED";; *) echo "$YEL";; esac; }
+feat_status_color() { case "$1" in done|released) echo "$GRN";; blocked|negotiating|rolled-back) echo "$RED";; releasing|hotfix-in-flight) echo "$MAG";; *) echo "$YEL";; esac; }
+
+# --- lane visibility: lane roles (trailing -N) appear only once used ---------
+lane_is_active() {
+  local r="$1" f
+  [[ "$r" =~ -[0-9]+$ ]] || return 0          # base roles always visible
+  [[ -n "$(sess_get "$LEDGER/sessions.json" "$r" 2>/dev/null)" ]] && return 0
+  for f in "$MESSAGES/$r-"*-out.md; do
+    [[ -e "$f" ]] && return 0
+  done
+  return 1
+}
 
 # --- views -------------------------------------------------------------------
 
@@ -96,6 +107,7 @@ v_inflight_lines() {
 v_heartbeat_lines() {
   local r f n=0
   for r in $ROLES; do
+    lane_is_active "$r" || continue
     f="$HEARTBEATS/$r.md"
     line "${MAG}${B}$r${RST}"
     if [[ -s "$f" ]]; then tail -n 10 "$f" | while IFS= read -r l; do line "  ${DIM}·${RST} $(echo "$l" | cut -c1-100)"; done
@@ -116,9 +128,14 @@ v_repo_lines() {
   local name path r branch dirty last dcol
   local -a snap
   for r in $ROLES; do
+    lane_is_active "$r" || continue
     path="$(role_repo "$r")"
+    # lane roles work in their isolated worktree, not the shared checkout
+    wt="$(role_field "$r" worktree)"
+    [[ "$wt" == "auto" ]] && wt="$(dirname "$path")/.orch-worktrees/$r"
+    [[ -n "$wt" && -e "$wt/.git" ]] && path="$wt"
     name="$r"
-    if [[ -d "$path/.git" ]]; then
+    if [[ -e "$path/.git" ]]; then
       mapfile -t snap < <(repo_snapshot "$path")
       branch="${snap[0]:--}"; dirty="${snap[1]:-0}"; last="${snap[2]:--}"
       [[ "$dirty" =~ ^[0-9]+$ ]] || dirty=0
@@ -137,6 +154,7 @@ v_overview_lines() {
   section "LAST HEARTBEAT PER ROLE"
   local r f
   for r in $ROLES; do
+    lane_is_active "$r" || continue
     f="$HEARTBEATS/$r.md"
     if [[ -s "$f" ]]; then line "${MAG}$r${RST}: $(tail -n 1 "$f" | cut -c1-95)"
     else line "${MAG}$r${RST}: ${DIM}(no heartbeat yet)${RST}"; fi
@@ -164,6 +182,9 @@ graph_role_data() { # $1=role → g_state g_msgs g_out g_hb g_age g_outage
   g_msgs=0; g_out="-"; g_state="none"; g_hb=""
   for out in "$MESSAGES/$role-"*-out.md; do
     [[ -e "$out" ]] || continue
+    # exact role match — a plain prefix glob would also count lane roles
+    # sharing the prefix (backend vs backend-2)
+    [[ "$(basename "$out")" =~ ^${role}-[0-9]{8}-[0-9]{6}-out\.md$ ]] || continue
     st="$(basename "$out" | grep -oE '[0-9]{8}-[0-9]{6}')"
     [[ -n "$st" ]] && last_disp="$st"
     if [[ -f "${out%-out.md}-reply.md" ]]; then g_msgs=$((g_msgs+1))
@@ -185,10 +206,14 @@ graph_role_data() { # $1=role → g_state g_msgs g_out g_hb g_age g_outage
 }
 
 v_graph_lines() {
-  local -a roles=( $ROLES )
+  local -a roles=()
+  local r hidden=0
+  for r in $ROLES; do
+    if lane_is_active "$r"; then roles+=( "$r" ); else hidden=$((hidden+1)); fi
+  done
   local n=${#roles[@]}
   local -A st msgs outr hb age outage
-  local r nwork=0 nfeat=0
+  local nwork=0 nfeat=0
   local ff=( "$LEDGER"/FEAT-*.md ); [[ -e "${ff[0]}" ]] && nfeat=${#ff[@]}
   for r in "${roles[@]}"; do
     graph_role_data "$r"
@@ -212,19 +237,7 @@ v_graph_lines() {
   printf '%*s%s\n' "$(( m-11 ))" '' "${CYN}│${RST}${B}$(pad_ctr 'ORCHESTRATOR' 28)${RST}${CYN}│${RST}"
   printf '%*s%s\n' "$(( m-11 ))" '' "${CYN}│${RST}$(pad_ctr "$nwork talking · $nfeat feature(s)" 28)${CYN}│${RST}"
   printf '%*s%s\n' "$(( m-11 ))" '' "${CYN}└$(rep 13 ─)┬$(rep 14 ─)┘${RST}"
-  # bridge row: spans first→last agent center; ┼ at interior centers, ┐ at the end
-  local bridge="" prev=""
-  for ((i=0; i<n; i++)); do
-    c="${centers[$i]}"
-    if [[ $i -eq 0 ]]; then
-      bridge+="$(printf '%*s' "$c" '')┌"
-    else
-      bridge+="$(rep $(( c - prev - 1 )) ─)"
-      if [[ $i -eq $(( n-1 )) ]]; then bridge+="┐"; else bridge+="┼"; fi
-    fi
-    prev="$c"
-  done
-  printf '   %s%s%s\n' "$DIM" "$bridge" "$RST"
+  # bridge + box rows print below, after the boxes are built
 
   local build_box='
     c="$(node_state_color "${st[$r]}")"
@@ -249,16 +262,36 @@ v_graph_lines() {
     mapfile -t brow < <(eval "$build_box")
     boxes+=( "${brow[@]}" )
   done
-  local k j row
-  for ((k=0; k<6; k++)); do
-    row=""
-    for ((j=0; j<n; j++)); do
-      row+="${row:+   }${boxes[$(( j*6 + k ))]}"
+  # rows of up to 4 boxes; each row gets its own bridge (lane topologies —
+  # roots + activated lanes — can exceed one row)
+  local per=4 k j row b e i2 prev bridge
+  (( n > per )) && printf '%*s%s%s\n' "$(( m + 3 ))" '' "${DIM}│${RST}"
+  for ((b=0; b<n; b+=per)); do
+    e=$(( b + per )); (( e > n )) && e=$n
+    bridge=""; prev=""
+    for ((i2=b; i2<e; i2++)); do
+      c="${centers[$i2]}"
+      if [[ $i2 -eq $b ]]; then
+        bridge+="$(printf '%*s' "$c" '')┌"
+      else
+        bridge+="$(rep $(( c - prev - 1 )) ─)"
+        if [[ $i2 -eq $(( e-1 )) ]]; then bridge+="┐"; else bridge+="┼"; fi
+      fi
+      prev="$c"
     done
-    line "   $row"
+    printf '   %s%s%s\n' "$DIM" "$bridge" "$RST"
+    for ((k=0; k<6; k++)); do
+      row=""
+      for ((j=b; j<e; j++)); do
+        row+="${row:+   }${boxes[$(( j*6 + k ))]}"
+      done
+      line "   $row"
+    done
+    echo
   done
   echo
   line "${DIM}● WORKING amber · ● IDLE green · ○ no session · SILENT red = in-flight but quiet ${RST}"
+  (( hidden > 0 )) && line "${DIM}$hidden declared lane agent(s) not yet activated (hidden until first dispatch)${RST}"
   line "${DIM}press [g] for the animated web version of this graph (graph.sh)${RST}"
 }
 
@@ -280,7 +313,10 @@ draw_footer() {
 
 pick_and_inspect() {
   clear 2>/dev/null || printf '\e[2J\e[H'
-  local -a roles=( $ROLES )
+  local -a roles=()
+  local r0
+  for r0 in $ROLES; do lane_is_active "$r0" && roles+=( "$r0" ); done
+  (( ${#roles[@]} > 9 )) && roles=( "${roles[@]:0:9}" )   # single-digit menu
   local n=${#roles[@]} menu="" i
   for ((i=0; i<n; i++)); do menu+=" [$((i+1))] ${roles[$i]}"; done
   printf 'Inspect which agent in the ZCode TUI?\n\n%s   [Esc] cancel\n' "$menu"

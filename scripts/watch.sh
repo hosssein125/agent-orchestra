@@ -45,6 +45,16 @@ heartbeat_tail() { # $1=role
   fi
 }
 
+lane_is_active() { # lane roles (trailing -N) count as visible only once used
+  local r="$1" f
+  [[ "$r" =~ -[0-9]+$ ]] || return 0
+  [[ -n "$(sess_get "$LEDGER/sessions.json" "$r" 2>/dev/null)" ]] && return 0
+  for f in "$LEDGER/messages/$r-"*-out.md; do
+    [[ -e "$f" ]] && return 0
+  done
+  return 1
+}
+
 case "$cmd" in
   status)
     echo "${C_B}=== Features ($(date '+%Y-%m-%d %H:%M:%S')) ===${C_0}"
@@ -57,7 +67,7 @@ case "$cmd" in
       updated="$(grep -m1 '^- Updated:' "$f" | cut -d: -f2- | xargs)"
       col="$C_Y"
       case "$status" in
-        done)               col="$C_G" ;;
+        done|released)       col="$C_G" ;;
         blocked|negotiating) col="$C_R" ;;
       esac
       echo "  $title — ${col}${status}${C_0} ${C_D}(updated $updated)${C_0}"
@@ -65,8 +75,8 @@ case "$cmd" in
 
     echo; echo "=== Role sessions ==="
     if [[ -f "$LEDGER/sessions.json" ]]; then
-      sed -n -e 's/^ *"\([a-z-]*\)": "\(sess_[^"]*\)".*/  \1: \2/p' \
-             -e 's/^ *"\([a-z-]*\)": null.*/  \1: (no session yet)/p' \
+      sed -n -e 's/^ *"\([a-z0-9-]*\)": "\(sess_[^"]*\)".*/  \1: \2/p' \
+             -e 's/^ *"\([a-z0-9-]*\)": null.*/  \1: (no session yet)/p' \
              "$LEDGER/sessions.json"
     fi
 
@@ -99,7 +109,7 @@ case "$cmd" in
     [[ $found_inflight -eq 0 ]] && echo "  (nothing in flight)"
 
     echo; echo "=== Last heartbeats ==="
-    for r in $ROLES; do heartbeat_tail "$r"; done
+    for r in $ROLES; do lane_is_active "$r" || continue; heartbeat_tail "$r"; done
 
     echo; echo "=== Recent activity ==="
     [[ -f "$ACTIVITY" ]] && tail -n 15 "$ACTIVITY" || echo "  (activity.log empty)"
@@ -107,13 +117,19 @@ case "$cmd" in
     echo; echo "=== Product repos (live git state, snapshot ≤60s old) ==="
     declare -a snap
     for r in $ROLES; do
+      lane_is_active "$r" || continue
+      name="$r"
       path="$(role_repo "$r")"
-      if [[ -d "$path/.git" ]]; then
+      # lane roles work in their isolated worktree, not the shared checkout
+      wt="$(role_field "$r" worktree)"
+      [[ "$wt" == "auto" ]] && wt="$(dirname "$path")/.orch-worktrees/$r"
+      [[ -n "$wt" && -e "$wt/.git" ]] && path="$wt"
+      if [[ -e "$path/.git" ]]; then
         mapfile -t snap < <(repo_snapshot "$path")
         d="${snap[1]:-0}"; [[ "$d" =~ ^[0-9]+$ ]] || d=0
         echo "  $name: branch=${snap[0]:--} dirty_files=$d"
       else
-        echo "  $name: repo not found ($path)"
+        echo "  $name: not a git checkout ($path)"
       fi
     done
     ;;

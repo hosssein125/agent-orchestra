@@ -159,6 +159,9 @@ mkdir -p "$MESSAGES_DIR"
 if [[ "${FORCE_RELAY:-0}" != 1 ]]; then
   for out in "$MESSAGES_DIR/$role-"*-out.md; do
     [[ -e "$out" ]] || continue
+    # exact role match — a plain prefix glob would also catch lane roles
+    # sharing the prefix (backend vs backend-2), blocking on their traffic
+    [[ "$(basename "$out")" =~ ^${role}-[0-9]{8}-[0-9]{6}-out\.md$ ]] || continue
     if [[ ! -f "${out%-out.md}-reply.md" ]]; then
       echo "error: '$role' already has an in-flight dispatch: $(basename "$out")" >&2
       echo "       One relay per role at a time (R2/R19). If it is dead, mark it orphaned:" >&2

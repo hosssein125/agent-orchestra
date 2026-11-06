@@ -53,6 +53,9 @@ node_bin="$(find_node)" || die "node not found on PATH or common locations — s
 # recorded yet (first dispatch records it only on completion)
 for out in "$MESSAGES_DIR/$role-"*-out.md; do
   [[ -e "$out" ]] || continue
+  # exact role match — don't mistake a lane role's transcript (backend-2)
+  # for this role's in-flight dispatch
+  [[ "$(basename "$out")" =~ ^${role}-[0-9]{8}-[0-9]{6}-out\.md$ ]] || continue
   if [[ ! -f "${out%-out.md}-reply.md" ]]; then
     if [[ $force -eq 0 ]]; then
       echo "error: a relay is currently RUNNING for '$role' ($(basename "$out"))." >&2

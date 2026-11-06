@@ -39,7 +39,7 @@ if [[ -n "$role" ]]; then
       file = $1
       gsub(/\\/, "/", file)                       # Git Bash grep uses backslashes
       sub(/^.*\/ledger\//, "", file)              # strip the ledger prefix
-      if (file ~ /^messages\//) { if (file ~ "^messages/" role "-") print $0 }
+      if (file ~ /^messages\//) { if (file ~ "^messages/" role "-[0-9]{8}-[0-9]{6}-") print $0 }
       else print $0
     }' | sed 's|^.*/[Ll]edger[/\\]||; s|\\|/|g')"
 else
